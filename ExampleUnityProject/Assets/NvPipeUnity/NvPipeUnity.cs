@@ -9,6 +9,16 @@ using Unity.Collections.LowLevel.Unsafe;
 namespace NvPipeUnity {
 
     public class Encoder : IDisposable {
+        /// <summary>
+        /// Create a encoder.
+        /// </summary>
+        /// <param name="codec">Encode method</param>
+        /// <param name="format">Format of the input.</param>
+        /// <param name="compression">Compression method</param>
+        /// <param name="bitrateMbps">bitrate in Mbps, notice it's bit not byte</param>
+        /// <param name="targetfps">target fps.</param>
+        /// <param name="width">input texture width</param>
+        /// <param name="height">input texture height</param>
         public Encoder(Codec codec, Format format, Compression compression, float bitrateMbps, UInt16 targetfps, UInt16 width, UInt16 height) {
             this.width = width;
             this.height = height;
@@ -45,6 +55,14 @@ namespace NvPipeUnity {
         Format format;
         Compression compression;
 
+        /// <summary>
+        /// Encode a frame
+        /// </summary>
+        /// <typeparam name="TIn">NativeArray data type</typeparam>
+        /// <param name="uncompressedData">raw uncompressed data. Should be same as encoder's width and height</param>
+        /// <param name="output">Where to put the encoded data</param>
+        /// <param name="forceIframe">Force to produce an I-Frame?</param>
+        /// <returns></returns>
         public unsafe ulong Encode<TIn>(NativeArray<TIn> uncompressedData, NativeArray<byte> output, bool forceIframe = false) where TIn : struct {
             if (this.encoder.ToInt64() == 0) {
                 throw new NvPipeException("The encoder is not intialized correctly!");
@@ -100,6 +118,14 @@ namespace NvPipeUnity {
         Codec codec;
         Format format;
 
+        /// <summary>
+        /// Decode a frame
+        /// </summary>
+        /// <typeparam name="TOut">What type of output is, e.g. Color32 or byte</typeparam>
+        /// <param name="compressedData">compressed data</param>
+        /// <param name="compressedDataSize">size of compressed data in byte</param>
+        /// <param name="output">where to put decoded data</param>
+        /// <returns></returns>
         public unsafe ulong Decode<TOut>(NativeArray<byte> compressedData, ulong compressedDataSize, NativeArray<TOut> output) where TOut:struct{
             if (this.decoder.ToInt64() == 0) {
                 throw new NvPipeException("The decoder is not intialized correctly!");
@@ -144,6 +170,9 @@ namespace NvPipeUnity {
         LOSSLESS,
     }
 
+    /// <summary>
+    /// Internal library wrapper for NvPipe function.
+    /// </summary>
     public class NvPipeUnityInternal {
 
         [DllImport("NvPipe")]

@@ -33,6 +33,6 @@ public class Recorder : MonoBehaviour
     }
 
     private void OnDestroy() {
-        encoder.Dispose();
+        encoder?.Dispose();
     }
 }

@@ -15,16 +15,17 @@ public class Decoder : MonoBehaviour
         recorder.onCompressedComplete += Recorder_onCompressedComplete;
         decoder = new NvPipeUnity.Decoder(NvPipeUnity.Codec.H264, NvPipeUnity.Format.RGBA32, 1024, 768);
 
+        //Create a texture to store the decoded result.
         output = new Texture2D(1024, 768, TextureFormat.RGBA32, false);
         showcaseMaterial.mainTexture = output;
     }
 
     private void Recorder_onCompressedComplete(Unity.Collections.NativeArray<byte> obj, ulong size) {
-        //var ot = new NativeArray<Color32>(1024 * 768 * 4, Allocator.Temp);
-        //decoder.Decode(obj, size, ot);
+        var ot = new NativeArray<Color32>(1024 * 768 * 4, Allocator.Temp);
+        decoder.Decode(obj, size, ot);
 
-        //output.LoadRawTextureData(ot);
-        //output.Apply();
-        //ot.Dispose();
+        output.LoadRawTextureData(ot);
+        output.Apply();
+        ot.Dispose();
     }
 }
