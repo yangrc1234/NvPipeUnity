@@ -29,8 +29,8 @@ public class Recorder : MonoBehaviour
     PingpongEncodeTextures encodeTextures;
     private void Awake() {
         camera = GetComponent<Camera>();
-        camera.targetTexture = new RenderTexture(1024, 768, 24);
-        encoder = new NvPipeUnity.Encoder(NvPipeUnity.Codec.H264, NvPipeUnity.Format.RGBA32, NvPipeUnity.Compression.LOSSY, 10.0f, 30, 1024, 768);
+        camera.targetTexture = new RenderTexture(1920, 1080, 24);
+        encoder = new NvPipeUnity.Encoder(NvPipeUnity.Codec.H264, NvPipeUnity.Format.RGBA32, NvPipeUnity.Compression.LOSSY, 10.0f, 30, 1920, 1080);
         
         encodeTextures = new PingpongEncodeTextures(camera.targetTexture.descriptor);
     }
@@ -46,6 +46,8 @@ public class Recorder : MonoBehaviour
                     Debug.LogError(task.error);
                 }
                 task.Dispose();
+            } else {
+                break;
             }
         }
     }
@@ -55,23 +57,23 @@ public class Recorder : MonoBehaviour
     private void OnPostRender() {
         Graphics.Blit(camera.targetTexture, encodeTextures.textures[encodeTextures.index]);
         tasks.Enqueue(encoder.EncodeOpenGLTexture(encodeTextures.pointers[encodeTextures.index].ToInt32(), false));
-        //AsyncGPUReadback.Request(camera.targetTexture, 0, onReadback);
         encodeTextures.index ^= 1;
+        //AsyncGPUReadback.Request(camera.targetTexture, 0, onReadback);
     }
 
     
     private void onReadback(AsyncGPUReadbackRequest obj) {
         var rawData = obj.GetData<byte>();
-        var intermediateContainer = new NativeArray<byte>(rawData, Allocator.Temp);
-        var length = encoder.Encode(rawData, intermediateContainer, false);
-        onCompressedComplete(intermediateContainer, length);
-        //System.Threading.Tasks.Task.Run(() => AsyncEncode(intermediateContainer));
+        var intermediateContainer = new NativeArray<byte>(rawData, Allocator.Persistent);
+        //var length = encoder.Encode(rawData, intermediateContainer, false);
+        //onCompressedComplete(intermediateContainer, length);
+        System.Threading.Tasks.Task.Run(() => AsyncEncode(intermediateContainer));
     }
 
     private void AsyncEncode(NativeArray<byte> data) {
-
         var length = encoder.Encode(data, tmpData);
         data.Dispose();
+        
     }
     
     private void OnDestroy() {

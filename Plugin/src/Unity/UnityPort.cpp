@@ -9,11 +9,18 @@
 #include "IUnityGraphics.h"
 #include <set>
 #include <fstream>
+#include <thread>
+#include <queue>
+#include <cuda.h>
+#include <cuda_gl_interop.h>
+#include <unordered_map>
+#include <exception>
+#include <sstream>
 
 extern "C" {
 #define LogToFile(...) \
 	::fprintf(stderr, __VA_ARGS__)
-	
+
 	struct AsyncOpenGLTextureTask {
 		AsyncOpenGLTextureTask() = default;
 		AsyncOpenGLTextureTask(NvPipe* nvp, uint32_t texture, uint32_t width, uint32_t height, bool forceIFrame)	//Encode task
@@ -151,8 +158,7 @@ extern "C" {
 		return taskIndex++;
 	}
 
-	UNITY_INTERFACE_EXPORT void UNITY_INTERFACE_API QueryAsyncResult(int task_id, bool acquireResultDataPtr/*Acquire the result data*/, TaskStatus* status, uint8_t** data, uint32_t* resultBufferSize, uint32_t* outputSize) {
-		std::lock_guard<std::mutex> lock(asyncMutex);
+	UNITY_INTERFACE_EXPORT void UNITY_INTERFACE_API QueryAsyncResult(int task_id, TaskStatus* status, uint8_t** data, uint32_t* resultBufferSize, uint32_t* outputSize) {
 		auto ite = finishedtasks.find(task_id);
 		if (ite == finishedtasks.end()) {
 			*status = TaskStatus::Pending;
@@ -162,15 +168,9 @@ extern "C" {
 			*data = nullptr;
 			if (ite->second.resultBuffer != nullptr) {	//async decode doesn't have a result array.
 				*resultBufferSize = ite->second.resultBufferSize;
-				if (acquireResultDataPtr) {
-					*data = ite->second.resultBuffer.release();
-				}
-				else
-				{	
-					*data = ite->second.resultBuffer.get();
-				}
+				*outputSize = ite->second.resultSize;
+				*data = ite->second.resultBuffer.get();
 			}
-			*outputSize = ite->second.resultSize;
 			*status = TaskStatus::Success;
 		}
 		else {
@@ -179,7 +179,6 @@ extern "C" {
 	}
 
 	UNITY_INTERFACE_EXPORT const char* UNITY_INTERFACE_API QueryAsyncError(int task_id) {
-		std::lock_guard<std::mutex> lock(asyncMutex);
 		auto ite = finishedtasks.find(task_id);
 		if (ite == finishedtasks.end())
 			return nullptr;

@@ -27,7 +27,7 @@ namespace NvPipeUnity {
                 if (encoder.closed || eventID < 0) {
                     return true;
                 }
-                NvPipeUnityInternal.QueryAsyncResult(eventID, false, out NvPipeUnityInternal.TaskStatus status, out IntPtr data, out int bufferSize, out int encodedSize);
+                NvPipeUnityInternal.QueryAsyncResult(eventID, out NvPipeUnityInternal.TaskStatus status, out IntPtr data, out int bufferSize, out int encodedSize);
                 return status == NvPipeUnityInternal.TaskStatus.Pending ? false : true;
             }
         }
@@ -41,7 +41,7 @@ namespace NvPipeUnity {
                 }
                 NvPipeUnityInternal.TaskStatus status;
                 IntPtr data;
-                NvPipeUnityInternal.QueryAsyncResult(eventID, false, out status, out data, out int bufferSize, out int encodedSize);
+                NvPipeUnityInternal.QueryAsyncResult(eventID, out status, out data, out int bufferSize, out int encodedSize);
                 return status == NvPipeUnityInternal.TaskStatus.Error ? true : false;
             }
         }
@@ -66,17 +66,21 @@ namespace NvPipeUnity {
 
         /// <summary>
         /// Get encoded data.
+        /// The returned NativeArray is alive before this .Dispose() is called.
+        /// <para>
+        /// Never access the returned NativeArray after .Dispose() is called, Unity is not able to detect the memory leak, and it will crash.
+        /// </para>
         /// </summary>
         /// <param name="tempAllocator"></param>
         /// <returns></returns>
-        public unsafe NativeArray<byte> GetData(out int encodedSize, Allocator allocator = Allocator.Temp) {
+        public unsafe NativeArray<byte> GetData(out int encodedSize) {
             NvPipeUnityInternal.TaskStatus status;
             IntPtr data;
-            NvPipeUnityInternal.QueryAsyncResult(eventID, true/*Detach the result memory if possible*/, out status, out data, out int bufferSize, out encodedSize);
+            NvPipeUnityInternal.QueryAsyncResult(eventID, out status, out data, out int bufferSize, out encodedSize);
             if (status != NvPipeUnityInternal.TaskStatus.Success) {
                 throw new UnityException("The request is not successful!");
             }
-            var directMemAccess = NativeArrayUnsafeUtility.ConvertExistingDataToNativeArray<byte>(data.ToPointer(), bufferSize, allocator);
+            var directMemAccess = NativeArrayUnsafeUtility.ConvertExistingDataToNativeArray<byte>(data.ToPointer(), bufferSize, Allocator.None);
             NativeArrayUnsafeUtility.SetAtomicSafetyHandle(ref directMemAccess, AtomicSafetyHandle.Create());
             return directMemAccess;
         }
@@ -151,7 +155,6 @@ namespace NvPipeUnity {
         }
 
         public unsafe AsyncEncodeTask EncodeOpenGLTexture(int textureID, bool forceIframe) {
-            
             var index = NvPipeUnityInternal.EncodeOpenGLTextureAsync(encoder, (uint)textureID, width, height, forceIframe);
             GL.IssuePluginEvent(NvPipeUnityInternal.GetKickstartFuncPtr(), index);
             return new AsyncEncodeTask() {
@@ -191,7 +194,7 @@ namespace NvPipeUnity {
                 if (decoder.closed || eventID < 0) {
                     return true;
                 }
-                NvPipeUnityInternal.QueryAsyncResult(eventID, false, out NvPipeUnityInternal.TaskStatus status, out IntPtr data, out int bufferSize, out int encodedSize);
+                NvPipeUnityInternal.QueryAsyncResult(eventID, out NvPipeUnityInternal.TaskStatus status, out IntPtr data, out int bufferSize, out int encodedSize);
                 return status == NvPipeUnityInternal.TaskStatus.Pending ? false : true;
             }
         }
@@ -205,7 +208,7 @@ namespace NvPipeUnity {
                 }
                 NvPipeUnityInternal.TaskStatus status;
                 IntPtr data;
-                NvPipeUnityInternal.QueryAsyncResult(eventID, false, out status, out data, out int bufferSize, out int encodedSize);
+                NvPipeUnityInternal.QueryAsyncResult(eventID, out status, out data, out int bufferSize, out int encodedSize);
                 return status == NvPipeUnityInternal.TaskStatus.Error ? true : false;
             }
         }
@@ -382,7 +385,7 @@ namespace NvPipeUnity {
         };
 
         [DllImport("NvPipe")]
-        public static extern void QueryAsyncResult(int task_id, bool detachResultData, out TaskStatus status, out IntPtr data, out int bufferSize, out int encodedSize);
+        public static extern void QueryAsyncResult(int task_id, out TaskStatus status, out IntPtr data, out int bufferSize, out int encodedSize);
 
         [DllImport("NvPipe")]
         public static extern IntPtr QueryAsyncError(int task_id);

@@ -763,7 +763,6 @@ std::mutex Encoder::mutex;
 
 #endif
 
-
 #ifdef NVPIPE_WITH_DECODER
 
 inline std::string DecErrorCodeToString(CUresult code)
