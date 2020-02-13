@@ -69,14 +69,14 @@ namespace NvPipeUnity {
         /// </summary>
         /// <param name="tempAllocator"></param>
         /// <returns></returns>
-        public unsafe NativeArray<byte> GetData(out int encodedSize) {
+        public unsafe NativeArray<byte> GetData(out int encodedSize, Allocator allocator = Allocator.Temp) {
             NvPipeUnityInternal.TaskStatus status;
             IntPtr data;
             NvPipeUnityInternal.QueryAsyncResult(eventID, true/*Detach the result memory if possible*/, out status, out data, out int bufferSize, out encodedSize);
             if (status != NvPipeUnityInternal.TaskStatus.Success) {
                 throw new UnityException("The request is not successful!");
             }
-            var directMemAccess = NativeArrayUnsafeUtility.ConvertExistingDataToNativeArray<byte>(data.ToPointer(), bufferSize, Allocator.Temp);
+            var directMemAccess = NativeArrayUnsafeUtility.ConvertExistingDataToNativeArray<byte>(data.ToPointer(), bufferSize, allocator);
             NativeArrayUnsafeUtility.SetAtomicSafetyHandle(ref directMemAccess, AtomicSafetyHandle.Create());
             return directMemAccess;
         }
@@ -169,6 +169,66 @@ namespace NvPipeUnity {
         }
     }
 
+    public struct AsyncDecodeTask : IDisposable{
+        public int eventID;
+        public Decoder decoder;
+
+        public void Dispose() {
+            if (eventID >= 0 && decoder != null) {
+                if (!isDone) {
+                    throw new UnityException("Dispose can't be called before isDone! It will cause memory corruption!");
+                }
+                NvPipeUnityInternal.ClearAsyncTask(eventID);
+                eventID = -1;
+                decoder = null;
+            }
+        }
+
+        public bool isDone {
+            get {
+                if (decoder == null)
+                    return true;
+                if (decoder.closed || eventID < 0) {
+                    return true;
+                }
+                NvPipeUnityInternal.QueryAsyncResult(eventID, false, out NvPipeUnityInternal.TaskStatus status, out IntPtr data, out int bufferSize, out int encodedSize);
+                return status == NvPipeUnityInternal.TaskStatus.Pending ? false : true;
+            }
+        }
+
+        public bool isError {
+            get {
+                if (decoder == null)
+                    return true;
+                if (decoder.closed || eventID < 0) {
+                    return true;
+                }
+                NvPipeUnityInternal.TaskStatus status;
+                IntPtr data;
+                NvPipeUnityInternal.QueryAsyncResult(eventID, false, out status, out data, out int bufferSize, out int encodedSize);
+                return status == NvPipeUnityInternal.TaskStatus.Error ? true : false;
+            }
+        }
+
+        public string error {
+            get {
+                if (decoder.closed) {
+                    return "Decoder already closed.";
+                }
+                if (eventID < 0) {
+                    return "Task is disposed";
+                }
+                if (isError) {
+                    var str = NvPipeUnityInternal.QueryAsyncError(eventID);
+                    var result = Marshal.PtrToStringAnsi(str);
+                    return result;
+                } else {
+                    return null;
+                }
+            }
+        }
+    }
+
     public class Decoder : IDisposable{
         public Decoder(Codec codec, Format format, UInt16 width, UInt16 height) {
             this.width = width;
@@ -203,7 +263,7 @@ namespace NvPipeUnity {
         IntPtr decoder;
         Codec codec;
         Format format;
-
+        public bool closed { get; private set; }
         /// <summary>
         /// Decode a frame
         /// </summary>
@@ -224,8 +284,24 @@ namespace NvPipeUnity {
             return result;
         }
 
+        public unsafe AsyncDecodeTask DecodeAsync(NativeArray<byte> srcData, uint srcSize, IntPtr outTexture) {
+            if (this.decoder.ToInt64() == 0) {
+                throw new NvPipeException("The decoder is not intialized correctly!");
+            }
+
+            //srcData will be copied in native code, so don't worry about srcData disposing.
+
+            var index = NvPipeUnityInternal.DecodeOpenGLTextureAsync(this.decoder, new IntPtr(srcData.GetUnsafePtr()), srcSize, (uint)outTexture.ToInt32(), width, height);
+            GL.IssuePluginEvent(NvPipeUnityInternal.GetKickstartFuncPtr(), index);
+            return new AsyncDecodeTask() {
+                decoder = this,
+                eventID = index
+            };
+        }
+
         public void Dispose() {
             if (this.decoder != null) {
+                closed = true;
                 NvPipeUnityInternal.DestroyNvPipe(this.decoder);
                 this.decoder = new IntPtr(0);
             }
@@ -296,6 +372,8 @@ namespace NvPipeUnity {
         public static extern int EncodeOpenGLTextureAsync(
         IntPtr nvp, uint texture, uint width, uint height, bool forceIFrame);
 
+        [DllImport("NvPipe")]
+        public static extern int DecodeOpenGLTextureAsync(IntPtr nvp, IntPtr src, uint srcSize, uint texture, uint width, uint height);
 
         public enum TaskStatus {
             Pending,
