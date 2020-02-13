@@ -299,9 +299,18 @@ public:
             CUDA_THROW(cudaGraphicsUnregisterResource(r.second.graphicsResource),
                 "Failed to unregister PBO graphics resource");
 
-        for (auto& r : this->registeredTextures)
-            CUDA_THROW(cudaGraphicsUnregisterResource(r.second.graphicsResource),
-                "Failed to unregister texture graphics resource");
+        for (auto& r : this->registeredTextures) {
+            auto result = cudaGraphicsUnregisterResource(r.second.graphicsResource);
+            //CUDA_THROW(result,"Failed to unregister texture graphics resource");  
+
+            //This exception is suppressed in NvPipeUnity.
+            //Unregister could throw due to early destroyed gl resource
+            //In Unity plugin code, we can't hack into gl resource destruction. 
+            //So when we press Stop button, all render textures are destroyed, and NvPipe is destructed, then an exception is thrown.
+            //We can't handle the exception since it's hidden inside C interface.
+
+            //So just disable it.
+        }
     }
 
     cudaGraphicsResource_t getTextureGraphicsResource(uint32_t texture, uint32_t target, uint32_t width, uint32_t height, uint32_t flags)
