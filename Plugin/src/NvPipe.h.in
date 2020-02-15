@@ -30,6 +30,8 @@
 
 #include <stdlib.h>
 #include <stdint.h>
+#include "Unity/IUnityInterface.h"
+#include "Unity/IUnityGraphics.h"
 
 #cmakedefine NVPIPE_WITH_ENCODER
 #cmakedefine NVPIPE_WITH_DECODER
@@ -90,16 +92,18 @@ typedef enum {
  * @param height Initial height of the encoder.
  * @return NULL on error.
  */
-NVPIPE_EXPORT NvPipe* NvPipe_CreateEncoder(NvPipe_Format format, NvPipe_Codec codec, NvPipe_Compression compression, uint64_t bitrate, uint32_t targetFrameRate, uint32_t width, uint32_t height);
+UNITY_INTERFACE_EXPORT uint32_t UNITY_INTERFACE_API NvPipe_CreateEncoder(NvPipe_Format format, NvPipe_Codec codec, NvPipe_Compression compression, uint64_t bitrate, uint32_t targetFrameRate, uint32_t width, uint32_t height);
 
-
+#ifdef NVPIPE_WITH_OPENGL
+UNITY_INTERFACE_EXPORT uint32_t UNITY_INTERFACE_API NvPipe_CreateTextureAsyncEncoder(NvPipe_Format format, NvPipe_Codec codec, NvPipe_Compression compression, uint64_t bitrate, uint32_t targetFrameRate, uint32_t width, uint32_t height);
+#endif
 /**
  * @brief Reconfigures the encoder with a new bitrate and target frame rate.
  * @param nvp Encoder instance.
  * @param bitrate Bitrate in bit per second, e.g., 32 * 1000 * 1000 = 32 Mbps (for lossy compression only).
  * @param targetFrameRate At this frame rate the effective data rate approximately equals the bitrate (for lossy compression only).
  */
-NVPIPE_EXPORT void NvPipe_SetBitrate(NvPipe* nvp, uint64_t bitrate, uint32_t targetFrameRate);
+UNITY_INTERFACE_EXPORT void UNITY_INTERFACE_API NvPipe_SetBitrate(uint32_t pipe, uint64_t bitrate, uint32_t targetFrameRate);
 
 
 /**
@@ -114,8 +118,7 @@ NVPIPE_EXPORT void NvPipe_SetBitrate(NvPipe* nvp, uint64_t bitrate, uint32_t tar
  * @param forceIFrame Enforces an I-frame instead of a P-frame.
  * @return Size of encoded data in bytes or 0 on error.
  */
-NVPIPE_EXPORT uint64_t NvPipe_Encode(NvPipe* nvp, const void* src, uint64_t srcPitch, uint8_t* dst, uint64_t dstSize, uint32_t width, uint32_t height, bool forceIFrame);
-
+UNITY_INTERFACE_EXPORT uint64_t UNITY_INTERFACE_API NvPipe_Encode(uint32_t pipe, const void* src, uint64_t srcPitch, uint8_t* dst, uint64_t dstSize, uint32_t width, uint32_t height, bool forceIFrame);
 
 #ifdef NVPIPE_WITH_OPENGL
 
@@ -131,21 +134,21 @@ NVPIPE_EXPORT uint64_t NvPipe_Encode(NvPipe* nvp, const void* src, uint64_t srcP
  * @param forceIFrame Enforces an I-frame instead of a P-frame.
  * @return Size of encoded data in bytes or 0 on error.
  */
-NVPIPE_EXPORT uint64_t NvPipe_EncodeTexture(NvPipe* nvp, uint32_t texture, uint32_t target, uint8_t* dst, uint64_t dstSize, uint32_t width, uint32_t height, bool forceIFrame);
+UNITY_INTERFACE_EXPORT uint64_t UNITY_INTERFACE_API NvPipe_EncodeTexture(uint32_t pipe, uint32_t texture, uint32_t target, uint8_t* dst, uint64_t dstSize, uint32_t width, uint32_t height, bool forceIFrame);
 
+UNITY_INTERFACE_EXPORT void UNITY_INTERFACE_API NvPipe_ResetEncodeTasks() ;
 
-/**
- * @brief encodePBO Encodes a single frame from an OpenGL pixel buffer object (PBO).
- * @param nvp Encoder instance.
- * @param pbo OpenGL PBO ID.
- * @param dst Host memory pointer for compressed output.
- * @param dstSize Available space for compressed output. Will be overridden by effective compressed output size.
- * @param width Width of frame in pixels.
- * @param height Height of frame in pixels.
-  * @param forceIFrame Enforces an I-frame instead of a P-frame.
- * @return Size of encoded data in bytes or 0 on error.
- */
-NVPIPE_EXPORT uint64_t NvPipe_EncodePBO(NvPipe* nvp, uint32_t pbo, uint8_t* dst, uint64_t dstSize, uint32_t width, uint32_t height, bool forceIFrame);
+UNITY_INTERFACE_EXPORT uint32_t UNITY_INTERFACE_API NvPipe_QueueEncodeTaskInMainThread(uint32_t nvp, uint32_t texture, uint32_t width, uint32_t height, bool forceIFrame);
+
+UNITY_INTERFACE_EXPORT void UNITY_INTERFACE_API NvPipe_RenderThreadPoll(int);
+
+UNITY_INTERFACE_EXPORT UnityRenderingEvent UNITY_INTERFACE_API NvPipe_GetRenderThreadPollFunc();
+
+UNITY_INTERFACE_EXPORT void UNITY_INTERFACE_API NvPipe_EncodeTextureAsyncQuery(
+	uint32_t taskIndex, bool* isDone, bool* isError, uint8_t** encodedData, uint64_t* encodeSize, const char** error);
+
+UNITY_INTERFACE_EXPORT void UNITY_INTERFACE_API NvPipe_EncodeTextureAsyncClearTask(uint32_t taskIndex) ;
+
 
 #endif
 
@@ -161,7 +164,7 @@ NVPIPE_EXPORT uint64_t NvPipe_EncodePBO(NvPipe* nvp, uint32_t pbo, uint8_t* dst,
  * @param height Initial height of the decoder.
  * @return NULL on error.
  */
-NVPIPE_EXPORT NvPipe* NvPipe_CreateDecoder(NvPipe_Format format, NvPipe_Codec codec, uint32_t width, uint32_t height);
+UNITY_INTERFACE_EXPORT uint32_t UNITY_INTERFACE_API NvPipe_CreateDecoder(NvPipe_Format format, NvPipe_Codec codec, uint32_t width, uint32_t height);
 
 
 /**
@@ -174,7 +177,7 @@ NVPIPE_EXPORT NvPipe* NvPipe_CreateDecoder(NvPipe_Format format, NvPipe_Codec co
  * @param height Height of frame in pixels.
  * @return Size of decoded data in bytes or 0 on error.
  */
-NVPIPE_EXPORT uint64_t NvPipe_Decode(NvPipe* nvp, const uint8_t* src, uint64_t srcSize, void* dst, uint32_t width, uint32_t height);
+UNITY_INTERFACE_EXPORT uint64_t UNITY_INTERFACE_API NvPipe_Decode(uint32_t nvp, const uint8_t* src, uint64_t srcSize, void* dst, uint32_t width, uint32_t height);
 
 
 #ifdef NVPIPE_WITH_OPENGL
@@ -190,20 +193,7 @@ NVPIPE_EXPORT uint64_t NvPipe_Decode(NvPipe* nvp, const uint8_t* src, uint64_t s
  * @param height Height of frame in pixels.
  * @return Size of decoded data in bytes or 0 on error.
  */
-NVPIPE_EXPORT uint64_t NvPipe_DecodeTexture(NvPipe* nvp, const uint8_t* src, uint64_t srcSize, uint32_t texture, uint32_t target, uint32_t width, uint32_t height);
-
-
-/**
- * @brief Decodes a single frame to an OpenGL pixel buffer object (PBO).
- * @param nvp Decoder instance.
- * @param src Compressed frame data in host memory.
- * @param srcSize Size of compressed data.
- * @param pbo OpenGL PBO ID.
- * @param width Width of frame in pixels.
- * @param height Height of frame in pixels.
- * @return Size of decoded data in bytes or 0 on error.
- */
-NVPIPE_EXPORT uint64_t NvPipe_DecodePBO(NvPipe* nvp, const uint8_t* src, uint64_t srcSize, uint32_t pbo, uint32_t width, uint32_t height);
+UNITY_INTERFACE_EXPORT uint64_t UNITY_INTERFACE_API NvPipe_DecodeTexture(uint32_t nvp, const uint8_t* src, uint64_t srcSize, uint32_t texture, uint32_t target, uint32_t width, uint32_t height);
 
 #endif
 
@@ -214,7 +204,7 @@ NVPIPE_EXPORT uint64_t NvPipe_DecodePBO(NvPipe* nvp, const uint8_t* src, uint64_
  * @brief Cleans up an encoder or decoder instance.
  * @param nvp The encoder or decoder instance to destroy.
  */
-NVPIPE_EXPORT void NvPipe_Destroy(NvPipe* nvp);
+UNITY_INTERFACE_EXPORT void UNITY_INTERFACE_API NvPipe_Destroy(uint32_t pipe);
 
 
 /**
@@ -222,9 +212,9 @@ NVPIPE_EXPORT void NvPipe_Destroy(NvPipe* nvp);
  * @param nvp Encoder or decoder. Use NULL to get error message if encoder or decoder creation failed.
  * @return Returned string must not be deleted.
  */
-NVPIPE_EXPORT const char* NvPipe_GetError(NvPipe* nvp);
+UNITY_INTERFACE_EXPORT const char* UNITY_INTERFACE_API NvPipe_GetError(uint32_t pipe);
 
-NVPIPE_EXPORT void NvPipe_ClearError(NvPipe* nvp);
+UNITY_INTERFACE_EXPORT void UNITY_INTERFACE_API NvPipe_ClearError(uint32_t pipe);
 }
 
 

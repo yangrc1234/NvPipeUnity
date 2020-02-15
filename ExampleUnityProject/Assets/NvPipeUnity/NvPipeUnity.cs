@@ -1,88 +1,284 @@
-﻿using System.Collections;
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using UnityEngine;
 using System.Runtime.InteropServices;
 using System;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
+using UnityEngine.Rendering;
 
 namespace NvPipeUnity {
 
-    public struct AsyncEncodeTask : IDisposable{
-        public int eventID;
-        public Encoder encoder;
-
-        public void Dispose() {
-            if (eventID >= 0 && encoder != null) {
-                NvPipeUnityInternal.ClearAsyncTask(eventID);
-                eventID = -1;
-                encoder = null;
+    /// <summary>
+    /// Remember rendertexture's native pointer.
+    /// 
+    /// It's cost to call GetNativeTexturePtr() for Unity, it will cause sync between render thread and main thread.
+    /// </summary>
+    internal class RenderTextureRegistery {
+        Dictionary<RenderTexture, IntPtr> ptrs = new Dictionary<RenderTexture, IntPtr>();
+        public IntPtr GetFor(RenderTexture rt) {
+            if (ptrs.ContainsKey(rt)) {
+                return ptrs[rt];
+            } else {
+                if (!rt.IsCreated()) {
+                    rt.Create();
+                }
+                var ptr = rt.GetNativeTexturePtr();
+                ptrs.Add(rt, ptr);
+                return ptr;
             }
         }
-        
+    }
+
+    /// <summary>
+    /// Helps to always start a DontDestroyOnLoad manager object before scene loads.
+    /// </summary>
+    static class NvPipeRuntimeInitializer {
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
+        static void Initialize() {
+            if (SystemInfo.graphicsDeviceType == GraphicsDeviceType.OpenGLCore && AsyncEncodeScheduler.instance == null) {
+                var go = new GameObject("__Async Encoder__");
+                go.hideFlags = HideFlags.HideAndDontSave;
+                GameObject.DontDestroyOnLoad(go);
+                var updater = go.AddComponent<AsyncEncodeScheduler>();
+            }
+        }
+    }
+
+    /// <summary>
+    /// Helps schedule, manage async tasks in native plugin.
+    /// </summary>
+    internal class AsyncEncodeScheduler : MonoBehaviour {
+        public static AsyncEncodeScheduler instance {
+            get {
+                return _instance;
+            }
+        }
+
+        private void Awake() {
+            NvPipeUnityInternal.NvPipe_ResetEncodeTasks();
+            _instance = this;
+        }
+
+        private void OnDestroy() {
+            NvPipeUnityInternal.NvPipe_ResetEncodeTasks();
+            undoneTasks.Clear();
+            tasks.Clear();
+        }
+
+        private static AsyncEncodeScheduler _instance;
+
+        public class InternalTask {
+            public int internalTaskIndex;
+            public bool isDone;
+            public bool isError;
+            public string error;
+            public NativeArray<byte> encodedData;
+        }
+
+        private void Update() {
+            DoUpdate();
+        }
+
+        private unsafe static void DoUpdate() {
+            var t = NvPipeUnityInternal.NvPipe_GetRenderThreadPollFunc();
+            GL.IssuePluginEvent(t, 0);
+            while (undoneTasks.Count > 0) {
+                var undoneIndex = undoneTasks.Peek();
+                var task = tasks[undoneIndex];
+                NvPipeUnityInternal.NvPipe_EncodeTextureAsyncQuery((uint)task.internalTaskIndex, out bool isDone, out bool isError, out IntPtr encodedData, out ulong encodeSize, out IntPtr error);
+                var err = NvPipeUnityInternal.PollError(0);
+                if (err != null)
+                    throw new Exception(err);
+                if (isDone) {
+                    undoneTasks.Dequeue();
+                    task.isDone = true;
+                    try {
+                        task.isError = isError;
+                        if (isError) {
+                            task.error = Marshal.PtrToStringAnsi(error);
+                        } else {
+                            task.encodedData = new NativeArray<byte>((int)encodeSize, Allocator.Persistent);
+                            UnsafeUtility.MemCpy(task.encodedData.GetUnsafePtr(), encodedData.ToPointer(), (long)encodeSize);
+                        }
+                    } finally {
+                        //Everything is now in managed side. free native things.
+                        NvPipeUnityInternal.NvPipe_EncodeTextureAsyncClearTask((uint)task.internalTaskIndex);
+                        err = NvPipeUnityInternal.PollError(0);
+                        if (err != null)
+                            Debug.LogError(err);
+                    }
+                } else {
+                    break;
+                }
+            }
+        }
+
+        public static int taskCreationIndex;
+        public static Queue<int> undoneTasks = new Queue<int>();
+        public static Dictionary<int, InternalTask> tasks = new Dictionary<int, InternalTask>();
+        public static int EnqueueTask(AsyncTextureEncoder encoder, uint texture, uint width, uint height, bool forceIFrame) {
+            var internalTaskID = NvPipeUnityInternal.NvPipe_QueueEncodeTaskInMainThread(encoder.encoder, texture, width, height, forceIFrame);
+            var error = NvPipeUnityInternal.PollError(encoder.encoder);
+            if (error != null) {
+                throw new Exception(error);
+            }
+
+            var taskIndex = taskCreationIndex++;
+            undoneTasks.Enqueue(taskIndex);
+            tasks[taskIndex] = new InternalTask() { internalTaskIndex = internalTaskID, isError = false, isDone = false };
+            return taskIndex;
+        }
+
+        public static bool TaskDone(int task) {
+            if (!tasks.ContainsKey(task))
+                return true;
+            return tasks[task].isDone;
+        }
+
+        public static bool TaskIsError(int task) {
+            if (!tasks.ContainsKey(task))
+                return true;
+
+            return tasks[task].isError;
+        }
+
+        public static string TaskError(int task) {
+            if (!tasks.ContainsKey(task))
+                return "Task doesn't exists";
+
+            return tasks[task].error;
+        }
+
+        public static void TaskDispose(int taskID) {
+            if (!tasks.ContainsKey(taskID))
+                return;
+            var task = tasks[taskID];
+            if (task.encodedData.IsCreated)
+                task.encodedData.Dispose();
+            tasks.Remove(taskID);
+        }
+
+        public static NativeArray<byte> TaskData(int taskID) {
+            return tasks[taskID].encodedData;
+        }
+    }
+
+    /// <summary>
+    /// A handle to async encode task.
+    /// </summary>
+    public struct AsyncEncodeTask : IDisposable {
+        public int handleID;
+
+        /// <summary>
+        /// Is task done.
+        /// "done" means sucess or error, check isError for more.
+        /// </summary>
         public bool isDone {
             get {
-                if (encoder == null)
-                    return true;
-                if (encoder.closed || eventID < 0) {
-                    return true;
-                }
-                NvPipeUnityInternal.QueryAsyncResult(eventID, out NvPipeUnityInternal.TaskStatus status, out IntPtr data, out int bufferSize, out int encodedSize);
-                return status == NvPipeUnityInternal.TaskStatus.Pending ? false : true;
-            }
-        }
-
-        public bool isError {
-            get {
-                if (encoder == null)
-                    return true;
-                if (encoder.closed || eventID < 0) {
-                    return true;
-                }
-                NvPipeUnityInternal.TaskStatus status;
-                IntPtr data;
-                NvPipeUnityInternal.QueryAsyncResult(eventID, out status, out data, out int bufferSize, out int encodedSize);
-                return status == NvPipeUnityInternal.TaskStatus.Error ? true : false;
-            }
-        }
-
-        public string error {
-            get {
-                if (encoder.closed) {
-                    return "Encoder already closed.";
-                }
-                if (eventID < 0) {
-                    return "Task is disposed";
-                }
-                if (isError) {
-                    var str = NvPipeUnityInternal.QueryAsyncError(eventID);
-                    var result = Marshal.PtrToStringAnsi(str);
-                    return result;
-                } else {
-                    return null;
-                }
+                return AsyncEncodeScheduler.TaskDone(handleID);
             }
         }
 
         /// <summary>
-        /// Get encoded data.
-        /// The returned NativeArray is alive before this .Dispose() is called.
-        /// <para>
-        /// Never access the returned NativeArray after .Dispose() is called, Unity is not able to detect the memory leak, and it will crash.
-        /// </para>
+        /// Is the task errored.
         /// </summary>
-        /// <param name="tempAllocator"></param>
-        /// <returns></returns>
-        public unsafe NativeArray<byte> GetData(out int encodedSize) {
-            NvPipeUnityInternal.TaskStatus status;
-            IntPtr data;
-            NvPipeUnityInternal.QueryAsyncResult(eventID, out status, out data, out int bufferSize, out encodedSize);
-            if (status != NvPipeUnityInternal.TaskStatus.Success) {
-                throw new UnityException("The request is not successful!");
+        public bool isError {
+            get {
+                return AsyncEncodeScheduler.TaskIsError(handleID);
             }
-            var directMemAccess = NativeArrayUnsafeUtility.ConvertExistingDataToNativeArray<byte>(data.ToPointer(), bufferSize, Allocator.None);
-            NativeArrayUnsafeUtility.SetAtomicSafetyHandle(ref directMemAccess, AtomicSafetyHandle.Create());
-            return directMemAccess;
+        }
+
+        /// <summary>
+        /// The error info. This is probably exception info thrown from Native Plugin, maybe hard to understand.
+        /// </summary>
+        public string error {
+            get {
+                return AsyncEncodeScheduler.TaskError(handleID);
+            }
+        }
+
+        /// <summary>
+        /// Dispose the task. Always remember to call this, otherwise your memory will be consumed.
+        /// </summary>
+        public void Dispose() {
+            AsyncEncodeScheduler.TaskDispose(handleID);
+        }
+
+        /// <summary>
+        /// Get the data. The data itself is managed by plugin.
+        /// As long as .Dispose() not called, the data is always valid.
+        /// 
+        /// Always remember to .Dispose() after data is useless!
+        /// </summary>
+        /// <param name="encodedSize"></param>
+        /// <returns></returns>
+        public NativeArray<byte> GetData(out int encodedSize) {
+            var t = AsyncEncodeScheduler.TaskData(handleID);
+            encodedSize = t.Length;
+            return t;
+        }
+    }
+
+    public class AsyncTextureEncoder : IDisposable {
+        RenderTextureRegistery ptrRegistery = new RenderTextureRegistery();
+        public AsyncTextureEncoder(Codec codec, Format format, Compression compression, float bitrateMbps, UInt16 targetfps, UInt16 width, UInt16 height) {
+            this.width = width;
+            this.height = height;
+            this.codec = codec;
+            this.format = format;
+            this.compression = compression;
+            closed = false;
+            encoder = NvPipeUnityInternal.NvPipe_CreateTextureAsyncEncoder(format, codec, compression, (ulong)(bitrateMbps * 1000 * 1000), targetfps, width, height);
+
+            var err = NvPipeUnityInternal.PollError(0);   //Null for creation error.
+            if (err != null) {
+                throw new NvPipeException(err);
+            }
+
+            switch (format) {
+                case Format.RGBA32:
+                    pitch = 4;
+                    break;
+                case Format.UINT4:
+                case Format.UINT8:
+                case Format.UINT16:
+                case Format.UINT32:
+                    pitch = 1;
+                    break;
+                default:
+                    pitch = 4;
+                    break;
+            }
+            pitch *= width;
+        }
+        ulong pitch;
+        UInt16 width, height;
+        public uint encoder { get; private set; }
+        Codec codec;
+        Format format;
+        Compression compression;
+        public bool closed { get; private set; }
+        public unsafe AsyncEncodeTask EncodeOpenGLTexture(int textureID, bool forceIframe) {
+            if (closed)
+                throw new System.Exception("Encoder already disposed!");
+            var t = AsyncEncodeScheduler.EnqueueTask(this, (uint)textureID, width, height, forceIframe);
+            return new AsyncEncodeTask() { handleID = t };
+        }
+        public unsafe AsyncEncodeTask EncodeOpenGLTexture(RenderTexture texture, bool forceIframe) {
+            if (closed)
+                throw new System.Exception("Encoder already disposed!");
+            if (texture.format != RenderTextureFormat.ARGB32)
+                throw new System.Exception("Only ARGB32 is supported for encoding!");
+            var t = AsyncEncodeScheduler.EnqueueTask(this, (uint)ptrRegistery.GetFor(texture).ToInt32(), width, height, forceIframe);
+            return new AsyncEncodeTask() { handleID = t };
+        }
+
+        public void Dispose() {
+            if (!closed && this.encoder != 0) {
+                NvPipeUnityInternal.NvPipe_Destroy(this.encoder);
+                this.encoder = 0;
+                closed = true;
+            }
         }
     }
 
@@ -104,9 +300,9 @@ namespace NvPipeUnity {
             this.format = format;
             this.compression = compression;
             closed = false;
-            encoder = NvPipeUnityInternal.CreateNvPipeEncoder(format, codec, compression, (ulong)(bitrateMbps * 1000 * 1000), targetfps, width, height);
+            encoder = NvPipeUnityInternal.NvPipe_CreateEncoder(format, codec, compression, (ulong)(bitrateMbps * 1000 * 1000), targetfps, width, height);
 
-            var err = NvPipeUnityInternal.PollError(new IntPtr(0));   //Null for creation error.
+            var err = NvPipeUnityInternal.PollError(0);
             if (err != null) {
                 throw new NvPipeException(err);
             }
@@ -129,7 +325,7 @@ namespace NvPipeUnity {
         }
         ulong pitch;
         UInt16 width, height;
-        IntPtr encoder;
+        uint encoder;
         Codec codec;
         Format format;
         Compression compression;
@@ -143,10 +339,10 @@ namespace NvPipeUnity {
         /// <param name="forceIframe">Force to produce an I-Frame?</param>
         /// <returns></returns>
         public unsafe ulong Encode<TIn>(NativeArray<TIn> uncompressedData, NativeArray<byte> output, bool forceIframe = false) where TIn : struct {
-            if (this.encoder.ToInt64() == 0) {
+            if (this.encoder == 0) {
                 throw new NvPipeException("The encoder is not intialized correctly!");
             }
-            var result = NvPipeUnityInternal.Encode(encoder, new IntPtr(uncompressedData.GetUnsafePtr()), pitch, new IntPtr(output.GetUnsafePtr()), (ulong)output.Length, width, height, forceIframe);
+            var result = NvPipeUnityInternal.NvPipe_Encode(encoder, new IntPtr(uncompressedData.GetUnsafePtr()), pitch, new IntPtr(output.GetUnsafePtr()), (ulong)output.Length, width, height, forceIframe);
             var err = NvPipeUnityInternal.PollError(encoder);
             if (err != null) {
                 throw new NvPipeException(err);
@@ -154,93 +350,24 @@ namespace NvPipeUnity {
             return result;
         }
 
-        public unsafe AsyncEncodeTask EncodeOpenGLTexture(int textureID, bool forceIframe) {
-            var index = NvPipeUnityInternal.EncodeOpenGLTextureAsync(encoder, (uint)textureID, width, height, forceIframe);
-            GL.IssuePluginEvent(NvPipeUnityInternal.GetKickstartFuncPtr(), index);
-            return new AsyncEncodeTask() {
-                eventID = index,
-                encoder = this
-            };
-        }
-
         public void Dispose() {
-            if (!closed && this.encoder != null) {
-                NvPipeUnityInternal.DestroyNvPipe(this.encoder);
-                this.encoder = new IntPtr(0);
+            if (!closed && this.encoder != 0) {
+                NvPipeUnityInternal.NvPipe_Destroy(this.encoder);
+                this.encoder = 0;
                 closed = true;
             }
         }
     }
 
-    public struct AsyncDecodeTask : IDisposable{
-        public int eventID;
-        public Decoder decoder;
-
-        public void Dispose() {
-            if (eventID >= 0 && decoder != null) {
-                if (!isDone) {
-                    throw new UnityException("Dispose can't be called before isDone! It will cause memory corruption!");
-                }
-                NvPipeUnityInternal.ClearAsyncTask(eventID);
-                eventID = -1;
-                decoder = null;
-            }
-        }
-
-        public bool isDone {
-            get {
-                if (decoder == null)
-                    return true;
-                if (decoder.closed || eventID < 0) {
-                    return true;
-                }
-                NvPipeUnityInternal.QueryAsyncResult(eventID, out NvPipeUnityInternal.TaskStatus status, out IntPtr data, out int bufferSize, out int encodedSize);
-                return status == NvPipeUnityInternal.TaskStatus.Pending ? false : true;
-            }
-        }
-
-        public bool isError {
-            get {
-                if (decoder == null)
-                    return true;
-                if (decoder.closed || eventID < 0) {
-                    return true;
-                }
-                NvPipeUnityInternal.TaskStatus status;
-                IntPtr data;
-                NvPipeUnityInternal.QueryAsyncResult(eventID, out status, out data, out int bufferSize, out int encodedSize);
-                return status == NvPipeUnityInternal.TaskStatus.Error ? true : false;
-            }
-        }
-
-        public string error {
-            get {
-                if (decoder.closed) {
-                    return "Decoder already closed.";
-                }
-                if (eventID < 0) {
-                    return "Task is disposed";
-                }
-                if (isError) {
-                    var str = NvPipeUnityInternal.QueryAsyncError(eventID);
-                    var result = Marshal.PtrToStringAnsi(str);
-                    return result;
-                } else {
-                    return null;
-                }
-            }
-        }
-    }
-
-    public class Decoder : IDisposable{
+    public class Decoder : IDisposable {
         public Decoder(Codec codec, Format format, UInt16 width, UInt16 height) {
             this.width = width;
             this.height = height;
             this.codec = codec;
             this.format = format;
-            decoder = NvPipeUnityInternal.CreateNvPipeDecoder(format, codec, width, height);
+            decoder = NvPipeUnityInternal.NvPipe_CreateDecoder(format, codec, width, height);
 
-            var err = NvPipeUnityInternal.PollError(new IntPtr(0));   //Null for creation error.
+            var err = NvPipeUnityInternal.PollError(0);   //Null for creation error.
             if (err != null) {
                 throw new NvPipeException(err);
             }
@@ -263,7 +390,7 @@ namespace NvPipeUnity {
         }
         ulong pitch;
         UInt16 width, height;
-        IntPtr decoder;
+        uint decoder;
         Codec codec;
         Format format;
         public bool closed { get; private set; }
@@ -275,11 +402,11 @@ namespace NvPipeUnity {
         /// <param name="compressedDataSize">size of compressed data in byte</param>
         /// <param name="output">where to put decoded data</param>
         /// <returns></returns>
-        public unsafe ulong Decode<TOut>(NativeArray<byte> compressedData, ulong compressedDataSize, NativeArray<TOut> output) where TOut:struct{
-            if (this.decoder.ToInt64() == 0) {
+        public unsafe ulong Decode<TOut>(NativeArray<byte> compressedData, ulong compressedDataSize, NativeArray<TOut> output) where TOut : struct {
+            if (this.decoder == 0) {
                 throw new NvPipeException("The decoder is not intialized correctly!");
             }
-            var result = NvPipeUnityInternal.Decode(decoder, new IntPtr(compressedData.GetUnsafePtr()), compressedDataSize, new IntPtr(output.GetUnsafePtr()), width, height);
+            var result = NvPipeUnityInternal.NvPipe_Decode(decoder, new IntPtr(compressedData.GetUnsafePtr()), compressedDataSize, new IntPtr(output.GetUnsafePtr()), width, height);
             var err = NvPipeUnityInternal.PollError(decoder);
             if (err != null) {
                 throw new NvPipeException(err);
@@ -287,26 +414,11 @@ namespace NvPipeUnity {
             return result;
         }
 
-        public unsafe AsyncDecodeTask DecodeAsync(NativeArray<byte> srcData, uint srcSize, IntPtr outTexture) {
-            if (this.decoder.ToInt64() == 0) {
-                throw new NvPipeException("The decoder is not intialized correctly!");
-            }
-
-            //srcData will be copied in native code, so don't worry about srcData disposing.
-
-            var index = NvPipeUnityInternal.DecodeOpenGLTextureAsync(this.decoder, new IntPtr(srcData.GetUnsafePtr()), srcSize, (uint)outTexture.ToInt32(), width, height);
-            GL.IssuePluginEvent(NvPipeUnityInternal.GetKickstartFuncPtr(), index);
-            return new AsyncDecodeTask() {
-                decoder = this,
-                eventID = index
-            };
-        }
-
         public void Dispose() {
-            if (this.decoder != null) {
+            if (this.decoder != 0) {
                 closed = true;
-                NvPipeUnityInternal.DestroyNvPipe(this.decoder);
-                this.decoder = new IntPtr(0);
+                NvPipeUnityInternal.NvPipe_Destroy(this.decoder);
+                this.decoder = 0;
             }
         }
     }
@@ -339,61 +451,66 @@ namespace NvPipeUnity {
     /// Internal library wrapper for NvPipe function.
     /// </summary>
     public class NvPipeUnityInternal {
+        [DllImport("NvPipe")]
+        public static extern uint NvPipe_CreateEncoder(Format format, Codec codec, Compression compression, ulong bitrate, uint targetfps, uint width, uint height);
 
         [DllImport("NvPipe")]
-        public static extern IntPtr CreateNvPipeEncoder(Format format, Codec codec, Compression compression, ulong bitrate, uint targetfps, uint width, uint height);
-
-
-        [DllImport("NvPipe")]
-        public static extern IntPtr CreateNvPipeDecoder(Format format, Codec codec, uint width, uint height);
+        public static extern void NvPipe_ResetEncodeTasks();
 
         [DllImport("NvPipe")]
-        public static extern IntPtr DestroyNvPipe(IntPtr pipe);
+        public static extern uint NvPipe_CreateTextureAsyncEncoder(Format format, Codec codec, Compression compression, ulong bitrate, uint targetfps, uint width, uint height);
 
         [DllImport("NvPipe")]
-        public static extern ulong Encode(IntPtr encoderPipe, IntPtr src, ulong srcPitch, IntPtr dst, ulong dstSize, uint width, uint height, bool forcelFrame);
+        public static extern void NvPipe_SetBitrate(uint pipe, ulong bitrate, uint targetFrameRate);
 
         [DllImport("NvPipe")]
-        public static extern ulong Decode(IntPtr decodePipe, IntPtr src, ulong srcSize, IntPtr dst, uint width, uint height);
+        public static extern ulong NvPipe_Encode(uint pipe, IntPtr src, ulong srcPitch, IntPtr dst, ulong dstSize, uint width, uint height, bool forceIFrame);
 
-        public static string PollError(IntPtr pipe) {
-            var str = GetError(pipe);
+        [DllImport("NvPipe")]
+        public static extern ulong NvPipe_EncodeTexture(uint pipe, uint texture, uint target, IntPtr dst, ulong dstSize, uint width, uint height, bool forceIFrame);
+
+        [DllImport("NvPipe")]
+        public static extern int NvPipe_QueueEncodeTaskInMainThread(uint nvp, uint texture, uint width, uint height, bool forceIFrame);
+
+        [DllImport("NvPipe")]
+        public static extern IntPtr NvPipe_GetRenderThreadPollFunc();
+
+        [DllImport("NvPipe")]
+        public static extern void NvPipe_EncodeTextureAsyncQuery(
+            uint taskIndex, out bool isDone, out bool isError, out IntPtr encodedData, out ulong encodeSize, out IntPtr error);
+
+        [DllImport("NvPipe")]
+        public static extern void NvPipe_EncodeTextureAsyncClearTask(uint taskIndex);
+
+        [DllImport("NvPipe")]
+        public static extern uint NvPipe_CreateDecoder(Format format, Codec codec, uint width, uint height);
+
+        [DllImport("NvPipe")]
+        public static extern ulong NvPipe_Decode(uint nvp, IntPtr src, ulong srcSize, IntPtr dst, uint width, uint height);
+
+        [DllImport("NvPipe")]
+        public static extern ulong NvPipe_DecodeTexture(uint nvp, IntPtr src, ulong srcSize, uint texture, uint target, uint width, uint height);
+
+        [DllImport("NvPipe")]
+        public static extern void NvPipe_Destroy(uint pipe);
+
+        [DllImport("NvPipe")]
+        public static extern IntPtr NvPipe_GetError(uint pipe);
+
+        [DllImport("NvPipe")]
+        public static extern void NvPipe_ClearError(uint pipe);
+
+        public static string PollError(uint pipe) {
+            var str = NvPipe_GetError(pipe);
             var result = Marshal.PtrToStringAnsi(str);
-            ClearError(pipe);
             if (result == "")
                 return null;
+            NvPipe_ClearError(pipe);
             return result;
         }
 
-        [DllImport("NvPipe")]
-        private static extern IntPtr GetError(IntPtr pipe);
-
-        [DllImport("NvPipe")]
-        private static extern void ClearError(IntPtr pipe);
-
-        [DllImport("NvPipe")]
-        public static extern int EncodeOpenGLTextureAsync(
-        IntPtr nvp, uint texture, uint width, uint height, bool forceIFrame);
-
-        [DllImport("NvPipe")]
-        public static extern int DecodeOpenGLTextureAsync(IntPtr nvp, IntPtr src, uint srcSize, uint texture, uint width, uint height);
-
-        public enum TaskStatus {
-            Pending,
-            Success,
-            Error
-        };
-
-        [DllImport("NvPipe")]
-        public static extern void QueryAsyncResult(int task_id, out TaskStatus status, out IntPtr data, out int bufferSize, out int encodedSize);
-
-        [DllImport("NvPipe")]
-        public static extern IntPtr QueryAsyncError(int task_id);
-
-        [DllImport("NvPipe")]
-        public static extern void ClearAsyncTask(int task_id);
-
-        [DllImport("NvPipe")]
-        public static extern IntPtr GetKickstartFuncPtr();
+        public static string CStrToString(IntPtr cStr) {
+            return Marshal.PtrToStringAnsi(cStr);
+        }
     }
 }

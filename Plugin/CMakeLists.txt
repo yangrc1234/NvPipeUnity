@@ -56,12 +56,13 @@ option(NVPIPE_BUILD_EXAMPLES "Builds the NvPipe example applications (requires b
 # Header
 configure_file(src/NvPipe.h.in include/NvPipe.h @ONLY)
 include_directories(${CMAKE_CURRENT_BINARY_DIR}/include)
+include_directories(./src)
 
 # NvPipe shared library
 list(APPEND NVPIPE_SOURCES
     src/NvPipe.cu
     src/Video_Codec_SDK_9.0.20/Samples/Utils/ColorSpace.cu
-    src/Unity/UnityPort.cpp
+    #src/Unity/UnityPort.cpp
     )
 list(APPEND NVPIPE_LIBRARIES
     ${CMAKE_DL_LIBS}

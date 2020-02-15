@@ -17,242 +17,275 @@
 #include <exception>
 #include <sstream>
 
-extern "C" {
+
+struct PipeProxy
+{
+	PipeProxy(NvPipe* pipe) :pipe(pipe)
+	{
+
+	}
+	NvPipe* pipe = nullptr;
+	~PipeProxy()
+	{
+		if (pipe != nullptr) {
+			NvPipe_Destroy(pipe);
+		}
+	}
+};
+
+std::unordered_map<uint64_t, std::shared_ptr<PipeProxy>> g_pipes;
+uint64_t g_pipeCreationIndex = 1;
+
+
+static std::shared_ptr<PipeProxy> GetPipe(uint64_t id) {
+	auto ite = g_pipes.find(id);
+	if (ite == g_pipes.end()) {
+		return nullptr;
+	}
+	return ite->second;
+}
+
 #define LogToFile(...) \
 	::fprintf(stderr, __VA_ARGS__)
 
-	struct AsyncOpenGLTextureTask {
-		AsyncOpenGLTextureTask() = default;
-		AsyncOpenGLTextureTask(NvPipe* nvp, uint32_t texture, uint32_t width, uint32_t height, bool forceIFrame)	//Encode task
-		{
-			isEncodeTask = true;
-			this->nvp = nvp;
-			this->texture = texture;
-			this->width = width;
-			this->height = height;
-			this->forceIFrame = forceIFrame;
-		}
-		AsyncOpenGLTextureTask(NvPipe* nvp, std::unique_ptr<uint8_t[]> src, uint32_t srcSize, uint32_t texture, uint32_t width, uint32_t height)	//Decode task
-		{
-			isEncodeTask = false;
-			this->nvp = nvp;
-			this->src = std::move(src);
-			this->srcSize = srcSize;
-			this->texture = texture;
-			this->width = width;
-			this->height = height;
-		}
-		std::unique_ptr<uint8_t[]> src;
-		uint32_t srcSize;
-		bool isEncodeTask;
-		NvPipe* nvp;
-		uint32_t texture;
-		uint32_t width;
-		uint32_t height;
-		bool forceIFrame;
-	};
+extern "C" {
 
-	struct TaskResult
-	{
-		bool success = false;
-		std::string error;
-		std::unique_ptr<uint8_t[]> resultBuffer;	
-		uint32_t resultSize;
-		uint32_t resultBufferSize;
-	};
-
-	enum class TaskStatus
-	{
-		Pending = 0,
-		Success,
-		Error
-	};
-
-	static std::set<NvPipe*> g_alivePipes;	
-	//We support async encoding OpenGL Texture.
-	//But it might happen that, Unity Render Thread calls Encode, after Main Thread destroys the NvPipe.
-	//Leading to a dangling pointer.
-	//So we record created encoders here, look it up before execute async encoding.
-
-	static std::map<int, AsyncOpenGLTextureTask> renderThreadTasks;
-	static std::map<int, TaskResult> finishedtasks;
-	static std::mutex asyncMutex;
-	static int taskIndex = 0;
-
-
-	UNITY_INTERFACE_EXPORT NvPipe* UNITY_INTERFACE_API CreateNvPipeEncoder(NvPipe_Format format, NvPipe_Codec codec, NvPipe_Compression compression, uint64_t bitrate, uint32_t targetfps, uint32_t width, uint32_t height) {
+	UNITY_INTERFACE_EXPORT uint64_t UNITY_INTERFACE_API CreateNvPipeEncoder(NvPipe_Format format, NvPipe_Codec codec, NvPipe_Compression compression, uint64_t bitrate, uint32_t targetfps, uint32_t width, uint32_t height) {
 		auto t = NvPipe_CreateEncoder(format, codec, compression, bitrate, targetfps, width, height);
 		if (t != nullptr) {
-			std::lock_guard<std::mutex> lock(asyncMutex);
-			g_alivePipes.insert(t);
+			auto ptr = std::make_shared<PipeProxy>(t);
+			g_pipes[g_pipeCreationIndex] = ptr;
 			LogToFile("Encoder %p created\n", t);
+			return g_pipeCreationIndex++;
 		}
-		return t;
+		return 0;
 	}
 
-	UNITY_INTERFACE_EXPORT NvPipe* UNITY_INTERFACE_API CreateNvPipeDecoder(NvPipe_Format format, NvPipe_Codec codec, uint32_t width, uint32_t height) {
+	UNITY_INTERFACE_EXPORT uint64_t UNITY_INTERFACE_API CreateNvPipeTextureAsyncEncoder(NvPipe_Format format, NvPipe_Codec codec, NvPipe_Compression compression, uint64_t bitrate, uint32_t targetfps, uint32_t width, uint32_t height) {
+		auto t = NvPipe_CreateTextureAsyncEncoder(format, codec, compression, bitrate, targetfps, width, height);
+		if (t != nullptr) {
+			auto ptr = std::make_shared<PipeProxy>(t);
+			g_pipes[g_pipeCreationIndex] = ptr;
+			LogToFile("Async texture encoder %p created\n", t);
+			return g_pipeCreationIndex++;
+		}
+		return 0;
+	}
+
+	UNITY_INTERFACE_EXPORT uint64_t UNITY_INTERFACE_API CreateNvPipeDecoder(NvPipe_Format format, NvPipe_Codec codec, uint32_t width, uint32_t height) {
 		auto t = NvPipe_CreateDecoder(format, codec, width, height);
 		if (t != nullptr) {
-			std::lock_guard<std::mutex> lock(asyncMutex);
-			g_alivePipes.insert(t);
+			auto ptr = std::make_shared<PipeProxy>(t);
+			g_pipes[g_pipeCreationIndex] = ptr;
 			LogToFile("Decoder created\n");
+			return g_pipeCreationIndex++;
 		}
-		return t;
+		return 0;
 	}
 
-	UNITY_INTERFACE_EXPORT void UNITY_INTERFACE_API DestroyNvPipe(NvPipe* pipe) {
-		std::lock_guard<std::mutex> lock(asyncMutex);
-		LogToFile("Destroying pipe, %p\n", pipe);
-		auto ite = g_alivePipes.find(pipe);
-		if (ite != g_alivePipes.end()) {
-			g_alivePipes.erase(ite);
-			NvPipe_Destroy(pipe);
-			LogToFile("Pipe destroyed\n");
+	UNITY_INTERFACE_EXPORT void UNITY_INTERFACE_API DestroyNvPipe(uint64_t pipe) {
+		g_pipes.erase(pipe);
+	}
+
+	UNITY_INTERFACE_EXPORT uint64_t UNITY_INTERFACE_API Encode(uint64_t encoderPipe, const uint8_t* src, uint64_t srcPitch, uint8_t* dst, uint64_t dstSize, uint32_t width, uint32_t height, bool forcelFrame) {
+		auto pipe = GetPipe(encoderPipe);
+		if (pipe != nullptr)
+			return NvPipe_Encode(pipe->pipe, src, srcPitch, dst, dstSize, width, height, forcelFrame);
+		return 0;	//This won't throw, just make sure C# code doesn't go wrong.
+	}
+
+	UNITY_INTERFACE_EXPORT uint64_t UNITY_INTERFACE_API Decode(uint64_t decodePipe, const uint8_t* src, uint64_t srcSize, uint8_t* dst, uint32_t width, uint32_t height) {
+		auto pipe = GetPipe(decodePipe);
+		if (pipe != nullptr)
+			return NvPipe_Decode(pipe->pipe, src, srcSize, dst, width, height);
+		return 0;
+	}
+
+	UNITY_INTERFACE_EXPORT const char* UNITY_INTERFACE_API GetError(uint64_t pipe) {
+		if (pipe == 0)
+			return NvPipe_GetError(nullptr);
+		auto p = GetPipe(pipe);
+		if (p != nullptr) {
+			return NvPipe_GetError(p->pipe);
 		}
-		else {
-			LogToFile("Destroying an already destroyed pipe\n");
+		return "";
+	}
+
+	UNITY_INTERFACE_EXPORT void UNITY_INTERFACE_API ClearError(uint64_t pipe) {
+		auto p = GetPipe(pipe);
+		if (p != nullptr) {
+			NvPipe_ClearError(p->pipe);
 		}
 	}
+}
+// Async tasks.
+// Async task is only for texture encoding/decoding.
+// Since encode/decode for host memory asyncly could be done on C# side.
 
-	UNITY_INTERFACE_EXPORT uint64_t UNITY_INTERFACE_API Encode(NvPipe* encoderPipe, const uint8_t* src, uint64_t srcPitch, uint8_t* dst, uint64_t dstSize, uint32_t width, uint32_t height, bool forcelFrame) {
-		return NvPipe_Encode(encoderPipe, src, srcPitch, dst, dstSize, width, height, forcelFrame);
+struct MainThreadPendingTask {
+	MainThreadPendingTask() = default;
+	MainThreadPendingTask(std::shared_ptr<PipeProxy> nvp, uint32_t texture, uint32_t width, uint32_t height, bool forceIFrame)	//Encode task
+	{
+		this->pipe = nvp;
+		this->texture = texture;
+		this->width = width;
+		this->height = height;
+		this->forceIFrame = forceIFrame;
 	}
+	std::shared_ptr<PipeProxy> pipe;
+	uint32_t texture;
+	uint32_t width;
+	uint32_t height;
+	bool forceIFrame;
+};
 
-	UNITY_INTERFACE_EXPORT uint64_t UNITY_INTERFACE_API Decode(NvPipe* decodePipe, const uint8_t* src, uint64_t srcSize, uint8_t* dst, uint32_t width, uint32_t height) {
-		return NvPipe_Decode(decodePipe, src, srcSize, dst, width, height);
+enum class TaskStatus
+{
+	Pending = 0,		//Not submitted to encode thread, or, encode thread is working on it.
+	Success,
+	Error
+};
+
+struct SubmittedTask
+{
+	SubmittedTask()
+	{
+		isDone = false;
+		isError = false;
 	}
+	std::shared_ptr<PipeProxy> pipe;
+	int taskIndex;
+	std::unique_ptr<uint8_t[]> resultBuffer;
+	uint32_t resultBufferSize;
 
-	UNITY_INTERFACE_EXPORT const char* UNITY_INTERFACE_API GetError(NvPipe* pipe) {
-		return NvPipe_GetError(pipe);
-	}
+	//Following are valid if encode work is finished.
+	bool isDone;
+	bool isError;
+	std::string error;
+	int encodedSize;
+};
 
-	UNITY_INTERFACE_EXPORT void UNITY_INTERFACE_API ClearError(NvPipe* pipe) {
-		NvPipe_ClearError(pipe);
-	}
+static std::map <int, MainThreadPendingTask> mainThreadPendingTasks;	//Called from Unity MainThread.
+static std::map<int, SubmittedTask> submittedTasks;				//Already submitted to encode/decode thread	
+static std::mutex taskMutex;
+static int renderThreadPendingTaskIndex = 1;
+void NvPipe_EncodeTextureAsyncQuery(NvPipe* nvp, uint64_t taskIndex, bool* isDone, bool* isError, uint64_t* encodeSize, std::string* error);
 
-	UNITY_INTERFACE_EXPORT uint64_t UNITY_INTERFACE_API EncodeOpenGLTextureAsync(
-		NvPipe* nvp, uint32_t texture, uint32_t width, uint32_t height, bool forceIFrame
+extern "C" {
+	UNITY_INTERFACE_EXPORT int UNITY_INTERFACE_API EncodeOpenGLTextureAsync(
+		uint64_t nvp, uint32_t texture, uint32_t width, uint32_t height, bool forceIFrame
 	) {
-		AsyncOpenGLTextureTask task(nvp, texture, width, height, forceIFrame);
+		auto p = GetPipe(nvp);
+		if (p == nullptr)
+			return 0;
 
-		std::lock_guard<std::mutex> lock(asyncMutex);
-
-		renderThreadTasks[taskIndex] = std::move(task);
-		LogToFile("Current pending task count: %d", renderThreadTasks.size());
-		LogToFile("Current finished task count: %d", finishedtasks.size());
-		return taskIndex++;
+		MainThreadPendingTask task(p, texture, width, height, forceIFrame);
+		mainThreadPendingTasks[renderThreadPendingTaskIndex] = std::move(task);
+		return renderThreadPendingTaskIndex++;
 	}
 
-	UNITY_INTERFACE_EXPORT uint64_t UNITY_INTERFACE_API DecodeOpenGLTextureAsync(
-		NvPipe* nvp, uint8_t *src, uint32_t srcSize, uint32_t texture, uint32_t width, uint32_t height
-	) {
-		//Copy src data to avoid src get destructed during execution.
-		auto srcData = std::make_unique<uint8_t[]>(srcSize);
-		memcpy(srcData.get(), src, srcSize);
+	UNITY_INTERFACE_EXPORT void UNITY_INTERFACE_API UpdateAsyncTasks(int ) {
+		std::lock_guard<std::mutex> lock(taskMutex);
+		LogToFile("Updating async tasks\n");
+		for (auto& ite : submittedTasks) {
 
-		AsyncOpenGLTextureTask task(nvp, std::move(srcData), srcSize, texture, width, height);
+			if (ite.second.isDone)	//Already solved
+			{
+				continue;
+			}
 
-		std::lock_guard<std::mutex> lock(asyncMutex);
-
-		renderThreadTasks[taskIndex] = std::move(task);
-		return taskIndex++;
+			bool isDone;
+			bool isError;
+			uint64_t encodeSize;
+			std::string error;
+			NvPipe_EncodeTextureAsyncQuery(ite.second.pipe->pipe, ite.second.taskIndex, &isDone, &isError, &encodeSize, &error);
+			if (isDone) {
+				LogToFile("Task done detected\n");
+				ite.second.isDone = true;
+				ite.second.isError = isError;
+				if (isError) {
+					LogToFile("Task error: %s\n", error.c_str());
+					ite.second.error = error;
+				}
+				else {
+					LogToFile("Task successded, encoded size %lld: \n", encodeSize);
+					ite.second.encodedSize = encodeSize;
+				}
+				NvPipe_EncodeTextureAsyncClearTask(ite.second.pipe->pipe, ite.second.taskIndex);
+			}
+		}
 	}
 
-	UNITY_INTERFACE_EXPORT void UNITY_INTERFACE_API QueryAsyncResult(int task_id, TaskStatus* status, uint8_t** data, uint32_t* resultBufferSize, uint32_t* outputSize) {
-		auto ite = finishedtasks.find(task_id);
-		if (ite == finishedtasks.end()) {
+	UNITY_INTERFACE_EXPORT void UNITY_INTERFACE_API QueryAsyncResult(int task_id, TaskStatus* status, uint8_t** data, uint32_t* resultBufferSize, uint32_t* outputSize, const char **error) {
+
+		std::lock_guard<std::mutex> lock(taskMutex);
+		//Check task_id is executing or not.
+		auto ite = submittedTasks.find(task_id);
+		if (ite == submittedTasks.end()) {
 			*status = TaskStatus::Pending;
 			return;
 		}
-		if (ite->second.success) {
-			*data = nullptr;
-			if (ite->second.resultBuffer != nullptr) {	//async decode doesn't have a result array.
+
+		if (ite->second.isDone)	//Already solved
+		{
+			if (ite->second.isError) {
+				*status = TaskStatus::Error;
+				*error = ite->second.error.c_str();
+			}
+			else {
+				*status = TaskStatus::Success;
 				*resultBufferSize = ite->second.resultBufferSize;
-				*outputSize = ite->second.resultSize;
+				*outputSize = ite->second.encodedSize;
 				*data = ite->second.resultBuffer.get();
 			}
-			*status = TaskStatus::Success;
+
 		}
 		else {
-			*status = TaskStatus::Error;
+			*status = TaskStatus::Pending;
 		}
-	}
-
-	UNITY_INTERFACE_EXPORT const char* UNITY_INTERFACE_API QueryAsyncError(int task_id) {
-		auto ite = finishedtasks.find(task_id);
-		if (ite == finishedtasks.end())
-			return nullptr;
-		return ite->second.error.c_str();
 	}
 
 	UNITY_INTERFACE_EXPORT void ClearAsyncTask(int task_id) {
-		std::lock_guard<std::mutex> lock(asyncMutex);
-		finishedtasks.erase(task_id);
-		renderThreadTasks.erase(task_id);
+		std::lock_guard<std::mutex> lock(taskMutex);
+		submittedTasks.erase(task_id);
 	}
 
 	UNITY_INTERFACE_EXPORT void UNITY_INTERFACE_API KickstartRequestInRenderThread(int event_id) {
 		// Get task back
-		std::lock_guard<std::mutex> lock(asyncMutex);
-		AsyncOpenGLTextureTask task;
+		MainThreadPendingTask task;
 		{
-			auto ite = renderThreadTasks.find(event_id);
-			if (ite == renderThreadTasks.end())
+			auto ite = mainThreadPendingTasks.find(event_id);
+			if (ite == mainThreadPendingTasks.end())
 				return;
-			task = std::move(renderThreadTasks[event_id]);
-			renderThreadTasks.erase(ite);
+			task = std::move(mainThreadPendingTasks[event_id]);
+			mainThreadPendingTasks.erase(event_id);
 		}
 
-		TaskResult tr;
-		if (g_alivePipes.find(task.nvp) == g_alivePipes.end()) {
-			LogToFile("Executing task on disposed NvPipe\n");
-			tr.error = "Pipe disposed.";
-			tr.success = false;
-		} else {
-			if (task.isEncodeTask) {
-				LogToFile("Starting encoding on OpenGL Texture.\n");
-				//Execute task.
-				auto resultBufferSize = task.width * task.height * 4;
-				tr.resultBuffer = std::make_unique<uint8_t[]>(resultBufferSize);
-				auto size = NvPipe_EncodeTexture(task.nvp, task.texture, GL_TEXTURE_2D, tr.resultBuffer.get(), resultBufferSize, task.width, task.height, task.forceIFrame);
-				if (strcmp(NvPipe_GetError(task.nvp), "")) {
-					tr.error = std::string(NvPipe_GetError(task.nvp));
-					tr.success = false;
-					NvPipe_ClearError(task.nvp);
-					LogToFile("Encoding encountered error:\n");
-					LogToFile(NvPipe_GetError(task.nvp));
-					LogToFile("\n");
-				}
-				else {
-					tr.resultSize = size;
-					tr.resultBufferSize = resultBufferSize;
-					tr.error = "";
-					tr.success = true;
-					LogToFile("Finished encoding without error.\n");
-				}
-			}
-			else {
-				LogToFile("Starting decode to OpenGL Texture.\n");
-				NvPipe_DecodeTexture(task.nvp, task.src.get(), task.srcSize, task.texture, GL_TEXTURE_2D, task.width, task.height);
-				if (strcmp(NvPipe_GetError(task.nvp), "")) {
-					tr.error = std::string(NvPipe_GetError(task.nvp));
-					tr.success = false;
-					NvPipe_ClearError(task.nvp);
-					LogToFile("Decoding encountered error:\n");
-					LogToFile(NvPipe_GetError(task.nvp));
-					LogToFile("\n");
-				}
-				else {
-					tr.error = "";
-					tr.success = true;
-					LogToFile("Finished decoding without error.\n");
-				}
-			}
+		SubmittedTask tr;
+		LogToFile("Submit async encode task to encode thread.\n");
+		//Execute task.
+		auto resultBufferSize = task.width * task.height * 4;
+		tr.resultBuffer = std::make_unique<uint8_t[]>(resultBufferSize);
+		tr.taskIndex = NvPipe_EncodeTextureAsync(task.pipe->pipe, task.texture, GL_TEXTURE_2D, tr.resultBuffer.get(), resultBufferSize, task.width, task.height, task.forceIFrame);
+		if (tr.taskIndex == 0) {
+			//Too busy.
+			tr.isDone = true;
+			tr.isError = true;
+			tr.error = "Encoder is too busy.";
 		}
-		finishedtasks[event_id] = std::move(tr);
+		tr.pipe = task.pipe;
+		tr.resultBufferSize = resultBufferSize; 
+		{
+			std::lock_guard<std::mutex> lock(taskMutex);
+			submittedTasks[event_id] = std::move(tr);
+		}
 	}
 
 	UNITY_INTERFACE_EXPORT UnityRenderingEvent UNITY_INTERFACE_API GetKickstartFuncPtr() {
 		return KickstartRequestInRenderThread;
+	}
+
+	UNITY_INTERFACE_EXPORT UnityRenderingEvent UNITY_INTERFACE_API GetUpdateFuncPtr() {
+		return UpdateAsyncTasks;
 	}
 }
