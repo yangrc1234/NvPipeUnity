@@ -35,7 +35,7 @@ namespace NvPipeUnity {
     static class NvPipeRuntimeInitializer {
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
         static void Initialize() {
-            if (SystemInfo.graphicsDeviceType == GraphicsDeviceType.OpenGLCore && AsyncEncodeScheduler.instance == null) {
+            if (AsyncEncodeScheduler.CheckGraphicsAPI() && AsyncEncodeScheduler.instance == null) {
                 var go = new GameObject("__Async Encoder__");
                 go.hideFlags = HideFlags.HideAndDontSave;
                 GameObject.DontDestroyOnLoad(go);
@@ -52,6 +52,12 @@ namespace NvPipeUnity {
             get {
                 return _instance;
             }
+        }
+
+        public static bool CheckGraphicsAPI() {
+            return 
+                SystemInfo.graphicsDeviceType == GraphicsDeviceType.OpenGLCore || 
+                SystemInfo.graphicsDeviceType == GraphicsDeviceType.OpenGLES3;  //Not sure ES2 will support, too lazy to test.
         }
 
         private void Awake() {
@@ -228,6 +234,11 @@ namespace NvPipeUnity {
             this.format = format;
             this.compression = compression;
             closed = false;
+
+            if (!AsyncEncodeScheduler.CheckGraphicsAPI()) {
+                throw new UnityException("Only OpenGL API is supported for async encoding!");
+            }
+
             encoder = NvPipeUnityInternal.NvPipe_CreateTextureAsyncEncoder(format, codec, compression, (ulong)(bitrateMbps * 1000 * 1000), targetfps, width, height);
 
             var err = NvPipeUnityInternal.PollError(0);   //Null for creation error.

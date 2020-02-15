@@ -62,7 +62,7 @@ include_directories(./src)
 list(APPEND NVPIPE_SOURCES
     src/NvPipe.cu
     src/Video_Codec_SDK_9.0.20/Samples/Utils/ColorSpace.cu
-    #src/Unity/UnityPort.cpp
+    src/UnityPort.inl
     )
 list(APPEND NVPIPE_LIBRARIES
     ${CMAKE_DL_LIBS}
@@ -111,48 +111,4 @@ set_target_properties(${PROJECT_NAME} PROPERTIES
     VERSION ${PROJECT_VERSION}
     SOVERSION 1)
 
-install(TARGETS ${PROJECT_NAME} EXPORT NvPipeConfig
-    ARCHIVE  DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    LIBRARY  DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    RUNTIME  DESTINATION ${CMAKE_INSTALL_BINDIR})
-install(FILES ${PROJECT_BINARY_DIR}/include/NvPipe.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
-
-install(EXPORT NvPipeConfig DESTINATION share/NvPipe/cmake)
-
 export(TARGETS ${PROJECT_NAME} FILE NvPipeConfig.cmake)
-
-# Examples
-if (NVPIPE_BUILD_EXAMPLES)
-    # Encode to / decode from file
-    add_executable(nvpExampleFile examples/file.cpp)
-    target_link_libraries(nvpExampleFile PRIVATE ${PROJECT_NAME})
-
-    if (NVPIPE_WITH_ENCODER AND NVPIPE_WITH_DECODER)
-        # Host/device memory comparison
-        add_executable(nvpExampleMemory examples/memory.cpp)
-        target_link_libraries(nvpExampleMemory PRIVATE ${PROJECT_NAME})
-
-        # Concurrent test
-        add_executable(nvpExampleConcurrent examples/concurrent.cpp)
-        target_link_libraries(nvpExampleConcurrent PRIVATE ${PROJECT_NAME})
-
-        # Lossless test
-        add_executable(nvpExampleLossless examples/lossless.cpp)
-        target_link_libraries(nvpExampleLossless PRIVATE ${PROJECT_NAME})
-
-        # EGL demo
-        if (NVPIPE_WITH_OPENGL)
-            list(APPEND CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/examples/cmake)
-
-            find_package(EGL)
-            find_package(GLEW)
-
-            if (EGL_FOUND AND GLEW_FOUND)
-                add_executable(nvpExampleEGL examples/egl.cpp)
-                target_include_directories(nvpExampleEGL PRIVATE ${EGL_INCLUDE_DIR} ${GLEW_INCLUDE_DIR})
-                target_link_libraries(nvpExampleEGL PRIVATE ${PROJECT_NAME} ${EGL_LIBRARIES} ${GLEW_LIBRARIES})
-            endif()
-        endif()
-    endif()
-endif()
-
