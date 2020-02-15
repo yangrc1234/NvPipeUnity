@@ -45,7 +45,7 @@ get_filename_component(CUDA_LIB_DIR ${CUDA_cudart_static_LIBRARY} DIRECTORY)
 find_library(CUDA_LIB NAMES cuda HINTS ${CUDA_LIB_DIR})
 
 # Set C++ standard
-set(CMAKE_CXX_STANDARD 11)
+set(CMAKE_CXX_STANDARD 17)
 
 # Options
 option(NVPIPE_WITH_ENCODER "Enables the NvPipe encoding interface." ON)

@@ -22,6 +22,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 */
+#include <shared_mutex>
 
 #ifdef NVPIPE_WITH_ENCODER
 #ifdef NVPIPE_WITH_OPENGL
@@ -445,7 +446,7 @@ UNITY_INTERFACE_EXPORT uint32_t UNITY_INTERFACE_API NvPipe_QueueEncodeTaskInMain
 		return 0;
 	if ((g_pendingTaskPtr + 1) % MAX_PENDING_TASK_COUNT == g_cleardTaskPtr) {	//Reached maximum submit tasks per frame, or earlier tasks are not cleared yet.
 		static char msgBuffer[200];
-		sprintf_s(msgBuffer, "Maximum task count reached. Did you forget to clear task, or submitted too many tasks(%d) at once?", MAX_PENDING_TASK_COUNT);
+		sprintf(msgBuffer, "Maximum task count reached. Did you forget to clear task, or submitted too many tasks(%d) at once?", MAX_PENDING_TASK_COUNT);
 		pipe->error = msgBuffer;
 		return 0;
 	}
@@ -476,7 +477,6 @@ UNITY_INTERFACE_EXPORT void UNITY_INTERFACE_API NvPipe_RenderThreadPoll(int)
 		DEBUG_LOG("RTP: %d, %d\n", g_submittedTaskPtr.load(), g_pendingTaskPtr.load());
 		auto& task = mainThreadPendingTasks[g_submittedTaskPtr];
 		//Allocate buffer
-		uint64_t resultBufferSize = task.width * task.height * 4;
 
 		try     //Error here is not stored in instance.error, since we're in render thread. Put error along inside SubmittedTask.
 		{

@@ -44,7 +44,6 @@
 #include <sstream>
 #include <unordered_map>
 #include <mutex>
-#include <shared_mutex>
 #include <queue>
 #include <thread>
 #include <atomic>
@@ -55,7 +54,7 @@
 #include <cuda_gl_interop.h>
 #endif
 
-#define DEBUG_LOG(fmt, ...) (::fprintf_s(stderr, fmt, __VA_ARGS__))
+#define DEBUG_LOG(fmt, ...) (::fprintf(stderr, fmt, __VA_ARGS__))
 
 class Exception
 {
