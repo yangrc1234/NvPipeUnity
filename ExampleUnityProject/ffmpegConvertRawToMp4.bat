@@ -1,0 +1,1 @@
+.\ffmpeg -i ExampleRawStream.bin -c copy output.mp4 -framerate 30
