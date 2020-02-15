@@ -45,7 +45,7 @@ get_filename_component(CUDA_LIB_DIR ${CUDA_cudart_static_LIBRARY} DIRECTORY)
 find_library(CUDA_LIB NAMES cuda HINTS ${CUDA_LIB_DIR})
 
 # Set C++ standard
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 11)
 
 # Options
 option(NVPIPE_WITH_ENCODER "Enables the NvPipe encoding interface." ON)
@@ -62,7 +62,6 @@ include_directories(./src)
 list(APPEND NVPIPE_SOURCES
     src/NvPipe.cu
     src/Video_Codec_SDK_9.0.20/Samples/Utils/ColorSpace.cu
-    src/UnityPort.inl
     )
 list(APPEND NVPIPE_LIBRARIES
     ${CMAKE_DL_LIBS}
