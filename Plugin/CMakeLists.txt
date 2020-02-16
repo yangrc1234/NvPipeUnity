@@ -110,4 +110,10 @@ set_target_properties(${PROJECT_NAME} PROPERTIES
     VERSION ${PROJECT_VERSION}
     SOVERSION 1)
 
+#Use staticlly linked CRT for windows, because I use VS2019, if this is not set, the dll won't be able to run on a earlier version windows.
+if (WIN32)
+set_property(TARGET ${PROJECT_NAME} PROPERTY
+  MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
+
 export(TARGETS ${PROJECT_NAME} FILE NvPipeConfig.cmake)

@@ -134,7 +134,9 @@ Decoding directly to a texture is not supported for now.
     }
 ```
 
-The output is a standard h264(or hevc based on selection) stream, you could use ffmpeg to decode as well.
+### Decode outside Unity
+Since encoded result is a standard h264(or hevc based on selection) stream, you could use ffmpeg to decode as well.  
+Example 03/04 shows how to write the encoded stream to local disk, and you could use ffmpeg to convert the stream to mp4. an example script is in `./ExampleUnityProject/ffmpegConvertRawToMp4.bat`.
 
 ## Requirements  
 Since it's a port of NvPipe library, it has same requirements as NvPipe, like CUDA installment, Nvidia graphics card etc.  
