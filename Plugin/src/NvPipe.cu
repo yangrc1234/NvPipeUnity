@@ -49,6 +49,7 @@
 #include <atomic>
 #include <cuda.h>
 #include <cuda_runtime_api.h>
+#include <condition_variable>
 
 #ifdef NVPIPE_WITH_OPENGL
 #include <cuda_gl_interop.h>
