@@ -6,7 +6,6 @@ This is a Unity3D port of the video encode/decode library NvPipe(https://github.
 * Directly encode OpenGL RenderTexture.  
     * Happens on device memory, no PCI-E bus transfer.  
     * Use seprate thread, not blocking render thread nor main thread.  
-    * Implemented lock-free circular buffer for thread-safety and high performance.  
 
 ## Usage
 

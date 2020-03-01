@@ -1106,6 +1106,10 @@ public:
 	virtual ~AsyncTextureEncoder()
 	{
 		m_closed = true;
+		{
+			std::lock_guard<std::mutex> lock(this->m_cvMutex);
+			this->m_blockCv.notify_one();	
+		}
 		m_encodeThread->join();
 	}
 
@@ -1141,28 +1145,39 @@ public:
 		CUDA_THROW(cudaGraphicsUnmapResources(1, &resource),
 			"Failed to unmap texture graphics resource");
 
-		AsyncTask task;
-		task.forceIFrame = forceIFrame;
-		task.height = height;
-		task.width = width;
-		task.isError = false;
-		m_tasks[currentTaskIndex] = std::move(task);
-		DEBUG_LOG("Encoder: %d task is in async queue now\n", currentTaskIndex);
+		{//Enqueue the task.
 
-		//Task is published, move pointer to next, and encode thread can operate on current task.
-		//Atomic guarantees this happens after m_tasks[currentTaskIndex] = std::move(task);
-		this->m_pendingTaskPtr = (this->m_pendingTaskPtr + 1) % kEncodeBufferCount;
+			AsyncTask task;
+			task.forceIFrame = forceIFrame;
+			task.height = height;
+			task.width = width;
+			task.isError = false;
+			m_tasks[currentTaskIndex] = std::move(task);
+			DEBUG_LOG("Encoder: %d task is in async queue now\n", currentTaskIndex);
+
+			//Task is published, move pointer to next, and encode thread can operate on current task.
+			//Atomic guarantees this happens after m_tasks[currentTaskIndex] = std::move(task);
+			this->m_pendingTaskPtr = (this->m_pendingTaskPtr + 1) % kEncodeBufferCount;
+			
+			{
+				//Inform encode thread.
+				std::lock_guard<std::mutex> lock(this->m_cvMutex);
+				this->m_blockCv.notify_one();
+			}
+		}
 		return currentTaskIndex;    //Return task number.
 	}
 
 	void encodeThread() {
+		std::unique_lock<std::mutex> lock(this->m_cvMutex);
 		while (!m_closed)
 		{
-			if (m_encodedPtr == m_pendingTaskPtr)
+			if (m_encodedPtr == m_pendingTaskPtr)	//No task for now. wait.
 			{
-				std::this_thread::yield();
+				this->m_blockCv.wait(lock);
 				continue;
 			}
+
 			auto& currTask = m_tasks[m_encodedPtr];
 
 			DEBUG_LOG("Encoder thread: Encoding task: %d\n", m_encodedPtr.load());
@@ -1257,6 +1272,10 @@ private:
 		uint64_t encodedSize;
 		std::string error;
 	};
+
+	std::mutex m_cvMutex;	//Need lock to avoid encoder thread always running. The lock won't affect anything if encoder is busy.
+	std::condition_variable m_blockCv;
+
 	std::atomic<bool> m_closed;
 	std::atomic<int> m_pendingTaskPtr;
 	std::atomic<int> m_encodedPtr;
